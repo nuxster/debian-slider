@@ -2,7 +2,7 @@
 
 Simple Plymouth boot splash theme with password support.
 
-![Debian Slider Plymouth Theme preview](./preview.webm)
+![Debian Slider Plymouth Theme preview](./preview.gif)
 
 ## Installation
 ```shell
