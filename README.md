@@ -2,13 +2,13 @@
 
 Simple Plymouth boot splash theme with password support.
 
-![Debian Slider Plymouth Theme preview](./preview.gif)
+<img src="./preview.gif" alt="Debian Slider Plymouth Theme preview" style="max-width: 400px; height: auto;">
+
 
 ## Installation
 ```shell
 git clone https://github.com/nuxster/debian-slider.git
 cd debian-slider
-sudo make install
 sudo make apply-now
 sudo reboot
 ```
