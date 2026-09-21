@@ -1,0 +1,23 @@
+plymouth-theme-debian-slider (1.1) unstable; urgency=medium
+
+  * Switch from the two-step module to the script module and scale the splash
+    to 30 % of the screen height, so it looks the same at every resolution.
+  * Ship the images in 1x and 2x sets rendered from src/logo.svg.
+  * Drop the outdated keymap-render.png, which no longer matched plymouth's
+    keymap table and showed the wrong layout name in the password dialog.
+  * Show a progress bar with a title while installing updates.
+  * Fill the bar left to right at the end of the boot, triggered by
+    systemd-user-sessions.service: the script module's quit function runs
+    after plymouth has stopped drawing, and GDM and LightDM deactivate
+    plymouth as soon as they start, so the highlight used to freeze
+    mid-slide for the last seconds of the boot.
+
+ -- nuxster <nuxster@gmail.com>  Mon, 21 Sep 2026 12:00:00 +0300
+
+plymouth-theme-debian-slider (1.0) unstable; urgency=medium
+
+  * Initial packaging.
+  * Add tools/render.py to regenerate the frames from src/logo.png.
+  * Keep Debian's injected watermark.png wordmark at the bottom edge.
+
+ -- nuxster <nuxster@gmail.com>  Thu, 18 Sep 2026 12:00:00 +0300
