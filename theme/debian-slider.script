@@ -1,0 +1,554 @@
+# debian-slider: Debian swirl above a bar with a sliding, glowing highlight.
+#
+# Layout is expressed in "design units" on a 300x300 canvas:
+#
+#   rows   0..150   swirl (logo.png, 150 units tall, centred)
+#   rows 240..304   glow band (300x64, the bar itself is at rows 270..275)
+#   row  310..      status lines: prompt, caps lock warning, boot messages
+#
+# The canvas is scaled to a fixed fraction of the screen height (of the
+# smallest screen when there are several), so the theme has the same
+# proportions on every resolution.  Images are shipped in
+# integer scale sets (images/1x, images/2x, ...) rendered by tools/render.py;
+# the set nearest above the wanted scale is used and shrunk with a bilinear
+# filter, which stays sharp.  Text is rendered by the label plugin at a font
+# size scaled the same way.
+
+# ---------------------------------------------------------------- settings --
+
+canvas_fraction = 0.30;          # canvas height / screen height
+scale_step      = 0.25;          # snap the scale to multiples of this
+scale_min       = 0.5;
+throbber_period = 2;             # seconds for one left-right-left sweep of the highlight
+refresh_rate    = 100;           # script refresh rate, Hz: sprite changes reach the screen at the
+                                 # next tick, and the end-of-boot frame has only a few ticks to spare
+image_sets      = [1, 2];        # integer scales available under images/
+font_family     = "DejaVu Sans"; # the only family Debian's initramfs hook ships
+text_color      = [0.86, 0.86, 0.86];
+font_size       = 12;            # design units, i.e. points at scale 1
+title_size      = 30;
+
+# systemd reports every unit it starts; when one of these starts the boot is
+# over and the bar is filled (see "end of boot" below).  systemd-user-sessions
+# ("Permit User Sessions") is the earliest: every display manager and getty is
+# ordered after it, and the display managers freeze the splash a few dozen
+# milliseconds after they start.  The rest are fallbacks.
+end_units = ["systemd-user-sessions.service",
+             "gdm.service", "gdm3.service", "lightdm.service", "sddm.service",
+             "lxdm.service", "xdm.service", "slim.service", "wdm.service",
+             "nodm.service", "greetd.service", "ly.service", "lemurs.service",
+             "emptty.service", "cosmic-greeter.service", "plasmalogin.service",
+             "display-manager.service",
+             "plymouth-quit.service", "plymouth-quit-wait.service"];
+
+# design geometry, keep in sync with tools/render.py
+design.canvas      = 300;
+design.logo_h      = 150;
+design.frame_y     = 240;
+design.frame_h     = 64;
+design.bar_x       = 25;
+design.bar_y       = 270;
+design.bar_w       = 250;
+design.bar_h       = 5;
+design.highlight   = 100;        # width of the sliding highlight
+design.glow_margin = 30;
+design.dialog_w    = 340;
+design.dialog_h    = 33;
+design.lock_zone   = 35;
+design.bullet      = 10;
+design.gap         = 10;
+design.max_bullets = 29;
+
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+Plymouth.SetRefreshRate(refresh_rate);
+
+# ---------------------------------------------------------------- helpers ---
+
+fun min(a, b) { if (a < b) return a; return b; }
+fun max(a, b) { if (a > b) return a; return b; }
+fun round(x)  { return Math.Int(x + 0.5); }
+
+# design units -> screen pixels
+fun U(units) { return round(units * scale); }
+
+fun font(size_units) { return font_family + " " + max(6, round(size_units * scale)); }
+
+fun text_image(text, size_units) {
+        return Image.Text(text, text_color[0], text_color[1], text_color[2], 1, font(size_units), "center");
+}
+
+# Load an image from the chosen set and bring it to the current scale.
+fun load(name) {
+        local.img = Image(set_dir + name);
+        if (!img) {
+                # incomplete set on disk: fall back to the 1x images
+                img = Image("1x/" + name);
+                if (!img) return NULL;
+                local.factor = scale;
+        } else {
+                local.factor = scale / set_scale;
+        }
+        if (factor != 1)
+                img = img.Scale(max(1, round(img.GetWidth() * factor)), max(1, round(img.GetHeight() * factor)));
+        return img;
+}
+
+# Place a sprite centred horizontally on the canvas at a given top edge.
+fun place_centered(sprite, img, y, z) {
+        sprite.SetImage(img);
+        sprite.SetPosition(center_x - Math.Int(img.GetWidth() / 2), y, z);
+}
+
+# ---------------------------------------------------------------- scale -----
+
+# Without an argument Window.GetWidth/GetHeight return the size of the
+# *largest* screen; Window.GetWidth(i) is the size of screen i (NULL past the
+# last one).  Sprites are drawn once and shown on every screen, centred, so
+# the layout is sized for the smallest screen: sized for the largest one, a 4K
+# plus Full HD pair would show the Full HD screen a swirl twice too big.
+screen.w = Window.GetWidth();
+screen.h = Window.GetHeight();
+
+# 30 % of the height, but never wider than 80 % of the width (portrait screens)
+fun fit_scale(w, h) {
+        return min(h * canvas_fraction / design.canvas, w * 0.8 / design.dialog_w);
+}
+
+scale = fit_scale(screen.w, screen.h);
+for (i = 0; Window.GetWidth(i) && Window.GetHeight(i); i++)
+        scale = min(scale, fit_scale(Window.GetWidth(i), Window.GetHeight(i)));
+scale = max(scale_min, Math.Int(scale / scale_step + 0.5) * scale_step);
+
+# smallest shipped set that is not smaller than the wanted scale
+set_scale = image_sets[0];
+for (i = 0; image_sets[i]; i++) {
+        set_scale = image_sets[i];
+        if (set_scale >= scale) break;
+}
+set_dir = set_scale + "x/";
+
+canvas.size = U(design.canvas);
+canvas.x    = Math.Int((screen.w - canvas.size) / 2);
+canvas.y    = Math.Int((screen.h - canvas.size) / 2);
+center_x    = Math.Int(screen.w / 2);
+status_top  = canvas.y + U(design.canvas + design.gap);
+
+# ---------------------------------------------------------------- mode ------
+
+mode = Plymouth.GetMode();
+titles.updates          = ["Installing updates…",          "Do not turn off your computer."];
+titles["system-upgrade"]  = ["Installing system upgrade…",  "Do not turn off your computer."];
+titles["firmware-upgrade"]= ["Installing firmware update…", "Do not turn off your computer."];
+titles["system-reset"]    = ["Resetting system…",           "Do not turn off your computer."];
+update_mode = 0;
+if (titles[mode]) update_mode = 1;
+
+# ---------------------------------------------------------------- logo ------
+
+logo.image  = load("logo.png");
+logo.sprite = Sprite();
+place_centered(logo.sprite, logo.image, canvas.y, 1);
+
+# ---------------------------------------------------------------- bar -------
+# The bar is assembled from static parts and animated by moving and resizing
+# sprites, so there are no frame sequences:
+#
+#   track.png             the dark bar
+#   highlight-{left,mid,right}.png
+#                         the lit part: the two rounded ends of a pill and a
+#                         one pixel column of its middle
+#   glow-{left,mid,right}.png
+#                         the glow of a highlight, cut the same way, with
+#                         glow_margin outside each end
+#   tail-{left,right}.png the faint tails the highlight bleeds along the track
+#
+# The pill and the glow are "stretches": the ends are shown as they are and
+# the middle column is scaled to whatever is needed in between, so any width
+# from the sliding highlight up to the whole track looks exactly like a
+# rendered frame would.
+#
+# Only Image.Scale is used to derive images, never Image.Crop: plymouth's
+# blend onto a transparent buffer (which Crop does) darkens translucent
+# pixels, which would dim the glow.  That is also why the ends ship as
+# separate files instead of being cut from one image at runtime.
+
+bar.x      = canvas.x + U(design.bar_x);         # left end of the track, screen px
+bar.y      = canvas.y + U(design.bar_y);
+bar.w      = U(design.bar_w);
+bar.h      = U(design.bar_h);
+bar.glow_y = canvas.y + U(design.frame_y);
+bar.margin = U(design.glow_margin);
+bar.full   = 0;                # 1 once the whole bar is lit (end of boot)
+bar.tick   = 0;
+bar.hl_x   = -1;               # current left edge and width of the highlight
+bar.hl_w   = 0;
+
+bar.track = Sprite(load("track.png"));
+bar.track.SetPosition(bar.x, bar.y, 2);
+
+fun stretch_new(name, y, z) {
+        local.s = [];
+        s.left_image  = load(name + "-left.png");
+        s.mid_image   = load(name + "-mid.png");
+        s.right_image = load(name + "-right.png");
+        s.h     = s.left_image.GetHeight();
+        s.edge  = s.left_image.GetWidth();
+        s.min   = s.edge + s.right_image.GetWidth();   # the ends alone, nothing in between
+        s.left  = Sprite();
+        s.mid   = Sprite();
+        s.right = Sprite();
+        s.y = y;
+        s.z = z;
+        s.w = -1;                                # width shown, -1: nothing yet
+        return s;
+}
+
+fun stretch_set(s, x, w) {
+        if (w != s.w) {
+                s.w = w;
+                if (w >= s.min) {
+                        s.left.SetImage(s.left_image);
+                        s.right.SetImage(s.right_image);
+                        if (w > s.min) s.mid.SetImage(s.mid_image.Scale(w - s.min, s.h));
+                        s.mid.SetOpacity(w > s.min);
+                } else {                         # narrower than the ends: squeeze them
+                        local.half = Math.Int(w / 2);
+                        s.left.SetImage(s.left_image.Scale(max(1, half), s.h));
+                        s.right.SetImage(s.right_image.Scale(max(1, w - half), s.h));
+                        s.mid.SetOpacity(0);
+                }
+                s.left.SetOpacity(1);
+                s.right.SetOpacity(1);
+        }
+        s.left.SetPosition(x, s.y, s.z);
+        s.right.SetPosition(x + w - s.right.GetImage().GetWidth(), s.y, s.z);
+        s.mid.SetPosition(x + s.edge, s.y, s.z);
+}
+
+fun stretch_hide(s) {
+        s.left.SetOpacity(0);
+        s.mid.SetOpacity(0);
+        s.right.SetOpacity(0);
+        s.w = -1;                                # the next stretch_set shows it again
+}
+
+bar.glow = stretch_new("glow", bar.glow_y, 3);
+bar.pill = stretch_new("highlight", bar.y, 5);
+bar.highlight_w = U(design.highlight);
+
+# A tail must not stick out of the track: near an end it is squeezed into
+# the room that is left (not cropped, see above).
+fun tail_new(name) {
+        local.t = [];
+        t.image = load(name);
+        t.w = t.image.GetWidth();
+        t.h = t.image.GetHeight();
+        t.sprite = Sprite();
+        t.len = -1;
+        return t;
+}
+
+fun tail_set(t, len, x) {                        # show the tail len px long, left edge at x
+        len = max(0, min(t.w, len));
+        if (len != t.len) {
+                t.len = len;
+                if (len == t.w) t.sprite.SetImage(t.image);
+                else if (len > 0) t.sprite.SetImage(t.image.Scale(len, t.h));
+                t.sprite.SetOpacity(len > 0);
+        }
+        t.sprite.SetPosition(x, bar.y, 4);
+}
+
+fun tail_hide(t) {
+        t.sprite.SetOpacity(0);
+        t.len = -1;
+}
+
+bar.tail_left  = tail_new("tail-left.png");
+bar.tail_right = tail_new("tail-right.png");
+
+# Put the highlight at x (screen px) with width w; the glow and tails follow.
+fun bar_set(x, w) {
+        bar.hl_x = x;
+        bar.hl_w = w;
+        stretch_set(bar.pill, x, w);
+        stretch_set(bar.glow, x - bar.margin, w + 2 * bar.margin);
+        local.left_len = min(bar.tail_left.w, x - bar.x);
+        tail_set(bar.tail_left, left_len, x - left_len);
+        tail_set(bar.tail_right, bar.x + bar.w - (x + w), x + w);
+}
+
+fun bar_hide() {
+        bar.track.SetOpacity(0);
+        stretch_hide(bar.pill);
+        stretch_hide(bar.glow);
+        tail_hide(bar.tail_left);
+        tail_hide(bar.tail_right);
+}
+
+fun bar_show() {
+        bar.track.SetOpacity(1);
+        if (bar.hl_x >= 0) bar_set(bar.hl_x, bar.hl_w);
+}
+
+# Sliding: the highlight goes left to right and back, linearly, in throbber_period.
+fun bar_refresh() {
+        if (update_mode || bar.full) return;
+        local.phase = bar.tick / (refresh_rate * throbber_period);
+        phase -= Math.Int(phase);
+        local.t = 2 * phase;
+        if (t > 1) t = 2 - t;
+        bar_set(bar.x + round((bar.w - bar.highlight_w) * t), bar.highlight_w);
+        bar.tick++;
+}
+
+# End of boot: the whole track is lit.  This is a single frame on purpose:
+# the display manager freezes the splash a few dozen milliseconds after this
+# is triggered (see "end of boot" below), so anything animated here would be
+# cut off half way.
+fun bar_fill() {
+        if (update_mode || bar.full) return;
+        bar.full = 1;
+        bar_set(bar.x, bar.w);
+}
+
+# ---------------------------------------------------------------- updates ---
+# Update modes get a title above the swirl; the bar becomes a real progress
+# bar, the highlight stretched to the percentage.
+
+if (update_mode) {
+        progress.percent = Sprite();
+        progress.value = -1;
+
+        subtitle.image = text_image(titles[mode][1], font_size);
+        title.image = text_image(titles[mode][0], title_size);
+        subtitle.y = max(0, canvas.y - U(2 * design.gap) - subtitle.image.GetHeight());
+        title.y = max(0, subtitle.y - U(design.gap) - title.image.GetHeight());
+        subtitle.sprite = Sprite();
+        title.sprite = Sprite();
+        place_centered(subtitle.sprite, subtitle.image, subtitle.y, 5);
+        place_centered(title.sprite, title.image, title.y, 5);
+}
+
+fun system_update_callback(value) {
+        if (!update_mode) return;
+        value = max(0, min(100, Math.Int(value)));
+        if (value == progress.value) return;
+        progress.value = value;
+        bar_set(bar.x, max(bar.pill.min, round(bar.w * value / 100)));
+        place_centered(progress.percent, text_image(value + " %", font_size), status_top, 5);
+}
+
+Plymouth.SetSystemUpdateFunction(system_update_callback);
+
+# ---------------------------------------------------------------- dialog ----
+# Password / question entry.  The dialog takes the place of the bar; the swirl
+# stays.  Below it: the prompt, a caps lock warning and any boot message.
+
+dialog.shown = 0;
+dialog.bullet_count = 0;
+dialog.has_prompt = 0;
+
+fun dialog_setup() {
+        if (dialog.ready) return;
+        dialog.ready = 1;
+        dialog.image = load("dialog.png");
+        dialog.bullet_image = load("bullet.png");
+        dialog.capslock_image = load("capslock.png");
+        dialog.w = dialog.image.GetWidth();
+        dialog.h = dialog.image.GetHeight();
+        dialog.x = center_x - Math.Int(dialog.w / 2);
+        # centre the box on the bar's centre line
+        dialog.y = canvas.y + U(design.bar_y + design.bar_h / 2) - Math.Int(dialog.h / 2);
+        dialog.sprite = Sprite(dialog.image);
+        dialog.sprite.SetPosition(dialog.x, dialog.y, 10);
+        dialog.sprite.SetOpacity(0);
+        dialog.text_x = dialog.x + U(design.lock_zone + design.gap / 2);
+        dialog.entry = Sprite();          # typed text for questions
+        dialog.prompt = Sprite();
+        dialog.capslock = Sprite(dialog.capslock_image);
+        dialog.capslock.SetOpacity(0);
+        dialog.capslock_shown = 0;
+}
+
+fun dialog_set_bullets(count) {
+        count = min(count, design.max_bullets);
+        for (i = 0; i < count || dialog.bullets[i]; i++) {
+                if (!dialog.bullets[i]) {
+                        dialog.bullets[i] = Sprite(dialog.bullet_image);
+                        dialog.bullets[i].SetPosition(dialog.text_x + i * U(design.bullet),
+                                                      dialog.y + Math.Int((dialog.h - dialog.bullet_image.GetHeight()) / 2),
+                                                      12);
+                }
+                if (i < count) dialog.bullets[i].SetOpacity(1);
+                else dialog.bullets[i].SetOpacity(0);
+        }
+        dialog.bullet_count = count;
+}
+
+fun dialog_set_entry_text(text) {
+        if (text == "") {
+                dialog.entry.SetOpacity(0);
+                return;
+        }
+        local.img = Image.Text(text, text_color[0], text_color[1], text_color[2], 1, font(font_size), "left");
+        dialog.entry.SetImage(img);
+        dialog.entry.SetPosition(dialog.text_x, dialog.y + Math.Int((dialog.h - img.GetHeight()) / 2), 12);
+        dialog.entry.SetOpacity(1);
+}
+
+fun dialog_set_prompt(text) {
+        if (text == "" || !text) {
+                dialog.prompt.SetOpacity(0);
+                dialog.has_prompt = 0;
+        } else {
+                place_centered(dialog.prompt, text_image(text, font_size), status_top, 12);
+                dialog.prompt.SetOpacity(1);
+                dialog.has_prompt = 1;
+        }
+        status_layout();
+}
+
+fun dialog_show(prompt) {
+        dialog_setup();
+        bar_hide();
+        dialog.sprite.SetOpacity(1);
+        dialog.shown = 1;
+        dialog_set_prompt(prompt);
+        dialog_update_capslock();
+}
+
+fun dialog_hide() {
+        if (!dialog.shown) return;
+        dialog.shown = 0;
+        dialog.sprite.SetOpacity(0);
+        dialog.prompt.SetOpacity(0);
+        dialog.entry.SetOpacity(0);
+        dialog.capslock.SetOpacity(0);
+        dialog.capslock_shown = 0;
+        dialog_set_bullets(0);
+        bar_show();
+        status_layout();
+}
+
+fun dialog_update_capslock() {
+        if (!dialog.shown || !Plymouth.GetCapslockState) return;
+        local.on = 0;
+        if (Plymouth.GetCapslockState()) on = 1;
+        if (on == dialog.capslock_shown) return;
+        dialog.capslock_shown = on;
+        dialog.capslock.SetOpacity(on);
+        status_layout();
+}
+
+# Stack the status lines below the canvas: prompt, caps lock icon, message.
+fun status_layout() {
+        local.y = status_top;
+        if (dialog.shown && dialog.has_prompt) {
+                dialog.prompt.SetY(y);
+                y += dialog.prompt.GetImage().GetHeight() + U(design.gap);
+        }
+        if (dialog.shown && dialog.capslock_shown) {
+                dialog.capslock.SetPosition(center_x - Math.Int(dialog.capslock_image.GetWidth() / 2), y, 12);
+                y += dialog.capslock_image.GetHeight() + U(design.gap);
+        }
+        if (message.shown) {
+                message.sprite.SetY(y);
+        }
+}
+
+fun display_normal_callback() {
+        dialog_hide();
+}
+
+fun display_password_callback(prompt, bullets) {
+        dialog_show(prompt);
+        dialog.entry.SetOpacity(0);
+        dialog_set_bullets(bullets);
+}
+
+fun display_question_callback(prompt, entry_text) {
+        dialog_show(prompt);
+        dialog_set_bullets(0);
+        dialog_set_entry_text(entry_text);
+}
+
+Plymouth.SetDisplayNormalFunction(display_normal_callback);
+Plymouth.SetDisplayPasswordFunction(display_password_callback);
+Plymouth.SetDisplayQuestionFunction(display_question_callback);
+
+# ---------------------------------------------------------------- messages --
+
+message.sprite = Sprite();
+message.shown = 0;
+
+fun display_message_callback(text) {
+        if (update_mode) return;               # update modes keep the screen quiet
+        place_centered(message.sprite, text_image(text, font_size), status_top, 11);
+        message.sprite.SetOpacity(1);
+        message.shown = 1;
+        status_layout();
+}
+
+fun hide_message_callback(text) {
+        message.sprite.SetOpacity(0);
+        message.shown = 0;
+}
+
+Plymouth.SetDisplayMessageFunction(display_message_callback);
+Plymouth.SetHideMessageFunction(hide_message_callback);
+
+# ---------------------------------------------------------------- refresh ---
+
+fun refresh_callback() {
+        if (dialog.shown) {
+                if (bar.tick % 10 == 0) dialog_update_capslock();
+                bar.tick++;
+                return;
+        }
+        bar_refresh();
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
+
+# ---------------------------------------------------------------- end of boot
+# The script module has no end-of-boot hook.  Its quit function runs only
+# after plymouth has already stopped drawing (the renderer is deactivated
+# before the splash is freed), so nothing drawn there ever reaches the screen.
+# Worse, GDM and LightDM run "plymouth deactivate" as soon as they start and
+# "plymouth quit --retain-splash" only once the greeter is up: whatever the bar
+# showed when the display manager started stays frozen for those seconds.
+# (Plymouth does call the boot progress function with 1.0 right before it
+# deactivates, but the script module flushes sprites only from its refresh
+# timer, which never fires again; the two-step module can afford an end
+# animation because plymouth waits for its become_idle, the script module's
+# returns at once.)
+#
+# What does arrive in time is systemd's status update for a unit that starts
+# just before the display manager: the bar is filled right there, in one
+# frame.  Measured on a GDM system, the deactivate follows the display
+# manager's start by some 50 ms; with refresh_rate ticks of 10 ms the frame
+# is on screen well within that.  The quit function is kept for the case
+# where plymouth still draws at quit.
+
+fun booting() { return mode == "boot" || mode == "unknown"; }
+
+for (i = 0; end_units[i]; i++) end_unit[end_units[i]] = 1;   # string-keyed lookup table
+
+fun update_status_callback(status) {
+        if (!end_unit[status] || !booting()) return;
+        dialog_hide();
+        bar_fill();
+}
+
+fun quit_callback() {
+        if (!booting()) return;
+        dialog_hide();
+        bar_fill();
+}
+
+Plymouth.SetUpdateStatusFunction(update_status_callback);
+Plymouth.SetQuitFunction(quit_callback);
+
+bar_refresh();

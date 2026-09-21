@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) check
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/plymouth-theme-debian-slider
+
+override_dh_auto_clean:
+	# nothing to clean: frames are pre-rendered and shipped in the source

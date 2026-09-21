@@ -1,0 +1,21 @@
+Source: plymouth-theme-debian-slider
+Section: x11
+Priority: optional
+Maintainer: nuxster <nuxster@gmail.com>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.7.0
+Homepage: https://github.com/nuxster/debian-slider
+Vcs-Git: https://github.com/nuxster/debian-slider.git
+Vcs-Browser: https://github.com/nuxster/debian-slider
+Rules-Requires-Root: no
+
+Package: plymouth-theme-debian-slider
+Architecture: all
+Depends: plymouth, plymouth-label, ${misc:Depends}
+Description: Plymouth boot splash theme with a sliding progress bar
+ A minimal Plymouth theme: the Debian swirl above a thin bar with a glowing
+ highlight that slides back and forth while the system boots and fills the
+ bar when the boot completes. Includes a password dialog for encrypted disks.
+ The splash is scaled to the screen so it looks the same at every resolution.
+ .
+ Select it with: plymouth-set-default-theme -R debian-slider

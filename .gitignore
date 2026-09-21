@@ -1,0 +1,7 @@
+debian/plymouth-theme-debian-slider/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+__pycache__/
