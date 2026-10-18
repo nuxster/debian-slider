@@ -7,6 +7,13 @@ PYTHON      ?= python3
 PREVIEW_SECONDS ?= 8
 # tools/render.py options, e.g. RENDER_FLAGS="--color 3b82f6"
 RENDER_FLAGS ?=
+# images the script loads; only these are installed (tools/check.py keeps the
+# list in sync with the script)
+IMAGES      := logo.png track.png \
+               highlight-left.png highlight-mid.png highlight-right.png \
+               glow-left.png glow-mid.png glow-right.png \
+               tail-left.png tail-right.png \
+               dialog.png bullet.png capslock.png
 
 .DEFAULT_GOAL := help
 .PHONY: help check render logo install uninstall apply apply-now set-default preview
@@ -45,8 +52,11 @@ uninstall:
 install: uninstall
 	install -d "$(DESTDIR)$(THEME_DIR)"
 	for set in theme/images/*x; do \
-		install -d "$(DESTDIR)$(THEME_DIR)/images/$$(basename $$set)"; \
-		install -m 0644 $$set/*.png "$(DESTDIR)$(THEME_DIR)/images/$$(basename $$set)/"; \
+		dest="$(DESTDIR)$(THEME_DIR)/images/$$(basename $$set)"; \
+		install -d "$$dest" || exit 1; \
+		for img in $(IMAGES); do \
+			install -m 0644 "$$set/$$img" "$$dest/" || exit 1; \
+		done; \
 	done
 	install -m 0644 theme/$(THEME).script "$(DESTDIR)$(THEME_DIR)/$(THEME).script"
 	sed -e 's|^ImageDir=.*|ImageDir=$(THEME_DIR)/images|' \

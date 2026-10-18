@@ -14,8 +14,8 @@ has the same proportions on a 1366x768 laptop and on a 4K monitor.
 | boot                                     | swirl, sliding highlight; the whole bar lights up when the display manager starts         |
 | shutdown, reboot                         | swirl, sliding highlight; no fill at the end                                               |
 | encrypted disk, `plymouth ask-for-password` | swirl stays, the bar is replaced by a box with a lock and one bullet per character; the prompt below, a caps lock warning when it is on |
-| `plymouth ask-question`                  | same box, the typed text instead of bullets                                                |
-| `plymouth message`, fsck output          | one centred line below the bar (or below the prompt)                                       |
+| `plymouth ask-question`                  | same box, the typed text instead of bullets; the start is cut off when it does not fit     |
+| `plymouth message`, fsck output          | one centred line below the bar (or below the prompt), cut with "…" when wider than the screen |
 | package, system or firmware updates      | title and subtitle above the swirl, a real progress bar in place of the highlight, percent below |
 
 ## Requirements
@@ -24,8 +24,10 @@ has the same proportions on a 1366x768 laptop and on a 4K monitor.
 * `python3` only if you want to re-render the images or run `make check`
 * `plymouth-x11` only for previewing the theme from a running desktop
 
-The theme uses the `DejaVu Sans` font, which is the only font family Debian's
-initramfs hook copies into the initramfs, so no extra font packages are needed.
+The theme asks for the generic `Sans` family.  Debian's initramfs hook copies
+only the system default font (`fc-match` without a family) into the
+initramfs, so `Sans` gives the same font at boot and at shutdown and no extra
+font packages are needed.
 
 ## Installation
 
@@ -42,7 +44,7 @@ Other targets (`make help` lists them):
 | `make check`     | validate the theme files, no root needed                              |
 | `make render`    | regenerate `theme/images/` (`RENDER_FLAGS="--color 3b82f6"` for options) |
 | `make logo`      | re-render `src/logo.png` from `src/logo.svg` (needs librsvg or ImageMagick) |
-| `make install`   | copy the files only; honours `DESTDIR` and `PREFIX`                   |
+| `make install`   | copy the files only (the images listed in `IMAGES`); honours `DESTDIR` and `PREFIX` |
 | `make apply`     | install and set as default without touching the initramfs             |
 | `make apply-now` | `apply` and rebuild the initramfs                                     |
 | `make uninstall` | remove the theme from `/usr/share/plymouth/themes`                    |
@@ -79,10 +81,10 @@ Plymouth's `two-step` module draws images at their pixel size, so a bitmap
 theme is large on a small screen and tiny on a large one.  This theme uses the
 `script` module instead: `theme/debian-slider.script` lays everything out on a
 300x300 "design" canvas and scales that canvas to 30 % of the screen height
-(the smallest screen's, if several are connected).  The scale is snapped to
-quarter steps, so a 1080p screen gets exactly 1x and a 4K screen exactly 2x
-with no resampling at all.  Text is rendered at a font size scaled the same
-way.
+(the smallest screen's, if several are connected).  The scale is snapped down
+to quarter steps, so the splash never exceeds that size, and a 1080p screen
+gets exactly 1x and a 4K screen exactly 2x with no resampling at all.  Text is
+rendered at a font size scaled the same way.
 
 Scaling one bitmap up looks blurry, so the images are shipped in two sets,
 `theme/images/1x` and `theme/images/2x`; the script picks the smallest set that
@@ -148,18 +150,23 @@ The settings block at the top of `theme/debian-slider.script` holds:
 * `canvas_fraction` (0.30): canvas height as a fraction of the screen height
 * `scale_step`, `scale_min`: snapping of the scale
 * `throbber_period`: seconds for one left-right-left sweep of the highlight
-* `refresh_rate`: script ticks per second; the highlight moves every tick
+* `refresh_rate` (60): script ticks per second; the highlight moves every tick,
+  and the end-of-boot frame reaches the screen at the next one
 * `end_units`: systemd units whose start ends the boot and fills the bar
 * `image_sets`: the `<S>x` directories available under `images/`
 * `font_family`, `font_size`, `title_size`, `text_color`
+* `text_width` (0.9): status lines wider than this fraction of the smallest
+  screen are cut with an ellipsis
 * `titles`: title and subtitle for the update modes
 * `design.*`: geometry in design units, must match `tools/render.py`
 
 ### Checks
 
 `make check` (`tools/check.py`) verifies the `.plymouth` file, that the script
-and every image it references exist, that the pieces of the bar fit together
-and that every set is an exact multiple of `1x`.  It runs without plymouth, so
+and every image it references exist, that no set holds images the script
+never loads, that the `IMAGES` list `make install` copies matches the script,
+that the pieces of the bar fit together and that every set is an exact
+multiple of `1x`.  It runs without plymouth, so
 it cannot execute the script; use `make preview` for that.
 
 ## Repository layout

@@ -1,3 +1,18 @@
+plymouth-theme-debian-slider (1.2) unstable; urgency=medium
+
+  * Drop the frames of the old two-step version from theme/images: the script
+    never loaded them, but they made up 95 % of the images, went into the
+    initramfs and failed make check, which broke the package build.
+  * Install only the images the script loads.
+  * Cut status lines and typed text that do not fit with an ellipsis, on
+    UTF-8 character boundaries.
+  * hide-message hides only the message it names.
+  * Snap the scale down, so the splash stays within its share of the screen.
+  * Lower the refresh rate to 60 Hz.
+  * Ask for the generic Sans font, the one Debian's initramfs hook ships.
+
+ -- nuxster <nuxster@gmail.com>  Sun, 18 Oct 2026 12:00:00 +0300
+
 plymouth-theme-debian-slider (1.1) unstable; urgency=medium
 
   * Switch from the two-step module to the script module and scale the splash

@@ -64,6 +64,15 @@ def script_image_names(script_path):
     return names
 
 
+def makefile_images(makefile_path):
+    """The IMAGES list `make install` copies."""
+    text = open(makefile_path, encoding="utf-8").read().replace("\\\n", " ")
+    m = re.search(r"^IMAGES\s*:?=(.*)$", text, re.M)
+    if not m:
+        fail(f"{makefile_path}: no IMAGES variable")
+    return set(m.group(1).split())
+
+
 def check_script_syntax(script_path):
     """Cheap structural check: balanced brackets and statements end in ';' or a bracket."""
     text = open(script_path, encoding="utf-8").read()
@@ -109,6 +118,13 @@ def main():
             fail(f"{script_path} never loads {name}; update IMAGES in check.py or the script")
     for name in referenced - set(IMAGES):
         fail(f"{script_path} loads {name}, which check.py does not know; add it to IMAGES")
+
+    makefile = os.path.join(here, "Makefile")
+    if os.path.isfile(makefile):
+        installed = makefile_images(makefile)
+        if installed != set(IMAGES):
+            fail(f"IMAGES in {makefile} differs from check.py: "
+                 f"missing {sorted(set(IMAGES) - installed)}, extra {sorted(installed - set(IMAGES))}")
 
     images_dir = os.path.join(theme_dir, "images")
     sets = {}

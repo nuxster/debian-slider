@@ -20,10 +20,11 @@ canvas_fraction = 0.30;          # canvas height / screen height
 scale_step      = 0.25;          # snap the scale to multiples of this
 scale_min       = 0.5;
 throbber_period = 2;             # seconds for one left-right-left sweep of the highlight
-refresh_rate    = 100;           # script refresh rate, Hz: sprite changes reach the screen at the
-                                 # next tick, and the end-of-boot frame has only a few ticks to spare
+refresh_rate    = 60;            # script refresh rate, Hz: sprite changes reach the screen at the
+                                 # next tick, and the end-of-boot frame has some 50 ms to get there
 image_sets      = [1, 2];        # integer scales available under images/
-font_family     = "DejaVu Sans"; # the only family Debian's initramfs hook ships
+font_family     = "Sans";        # the system default: Debian's initramfs hook ships only that font
+text_width      = 0.9;           # status lines are cut to this fraction of the smallest screen's width
 text_color      = [0.86, 0.86, 0.86];
 font_size       = 12;            # design units, i.e. points at scale 1
 title_size      = 30;
@@ -74,8 +75,48 @@ fun U(units) { return round(units * scale); }
 
 fun font(size_units) { return font_family + " " + max(6, round(size_units * scale)); }
 
+fun render_text(text, size_units, align) {
+        return Image.Text(text, text_color[0], text_color[1], text_color[2], 1, font(size_units), align);
+}
+
+# String functions work on bytes; a cut must not split a UTF-8 sequence.
+# Continuation bytes are 0x80..0xBF, taken from the second byte of "À" and "¿"
+# (the scanner has no \x escapes).
+utf8_cont_lo = "À".CharAt(1);
+utf8_cont_hi = "¿".CharAt(1);
+
+fun utf8_continuation(text, i) {
+        local.c = text.CharAt(i);
+        return c >= utf8_cont_lo && c <= utf8_cont_hi;
+}
+
+# Render text no wider than max_w: cut and marked with an ellipsis, at the end
+# (keep_end 0) or, for typed text that grows to the right, at the start
+# (keep_end 1).
+fun fit_text(text, size_units, max_w, align, keep_end) {
+        local.img = render_text(text, size_units, align);
+        local.len = text.Length();
+        if (img.GetWidth() <= max_w || len < 2) return img;
+        # first guess in proportion to the width, then shorten until it fits
+        local.n = min(len - 1, Math.Int(len * max_w / img.GetWidth()) + 1);
+        while (n > 0) {
+                if (keep_end) {
+                        local.from = len - n;
+                        while (from < len && utf8_continuation(text, from)) from++;
+                        img = render_text("…" + text.SubString(from, len), size_units, align);
+                } else {
+                        local.cut = n;
+                        while (cut > 0 && utf8_continuation(text, cut)) cut--;
+                        img = render_text(text.SubString(0, cut) + "…", size_units, align);
+                }
+                if (img.GetWidth() <= max_w) return img;
+                n -= max(1, Math.Int(n / 20));
+        }
+        return img;
+}
+
 fun text_image(text, size_units) {
-        return Image.Text(text, text_color[0], text_color[1], text_color[2], 1, font(size_units), "center");
+        return fit_text(text, size_units, status_max_w, "center", 0);
 }
 
 # Load an image from the chosen set and bring it to the current scale.
@@ -116,9 +157,14 @@ fun fit_scale(w, h) {
 }
 
 scale = fit_scale(screen.w, screen.h);
-for (i = 0; Window.GetWidth(i) && Window.GetHeight(i); i++)
+screen.min_w = screen.w;
+for (i = 0; Window.GetWidth(i) && Window.GetHeight(i); i++) {
         scale = min(scale, fit_scale(Window.GetWidth(i), Window.GetHeight(i)));
-scale = max(scale_min, Math.Int(scale / scale_step + 0.5) * scale_step);
+        screen.min_w = min(screen.min_w, Window.GetWidth(i));
+}
+# snapped down, so the limits above hold (the epsilon absorbs float error)
+scale = max(scale_min, Math.Int(scale / scale_step + 0.001) * scale_step);
+status_max_w = Math.Int(screen.min_w * text_width);
 
 # smallest shipped set that is not smaller than the wanted scale
 set_scale = image_sets[0];
@@ -365,6 +411,7 @@ fun dialog_setup() {
         dialog.sprite.SetPosition(dialog.x, dialog.y, 10);
         dialog.sprite.SetOpacity(0);
         dialog.text_x = dialog.x + U(design.lock_zone + design.gap / 2);
+        dialog.text_max_w = dialog.x + dialog.w - U(design.gap / 2) - dialog.text_x;
         dialog.entry = Sprite();          # typed text for questions
         dialog.prompt = Sprite();
         dialog.capslock = Sprite(dialog.capslock_image);
@@ -392,7 +439,8 @@ fun dialog_set_entry_text(text) {
                 dialog.entry.SetOpacity(0);
                 return;
         }
-        local.img = Image.Text(text, text_color[0], text_color[1], text_color[2], 1, font(font_size), "left");
+        # the end of the text, where the cursor is, stays visible
+        local.img = fit_text(text, font_size, dialog.text_max_w, "left", 1);
         dialog.entry.SetImage(img);
         dialog.entry.SetPosition(dialog.text_x, dialog.y + Math.Int((dialog.h - img.GetHeight()) / 2), 12);
         dialog.entry.SetOpacity(1);
@@ -488,10 +536,13 @@ fun display_message_callback(text) {
         place_centered(message.sprite, text_image(text, font_size), status_top, 11);
         message.sprite.SetOpacity(1);
         message.shown = 1;
+        message.text = text;
         status_layout();
 }
 
+# plymouth hide-message names the message to hide; a newer one stays
 fun hide_message_callback(text) {
+        if (!message.shown || (text && text != message.text)) return;
         message.sprite.SetOpacity(0);
         message.shown = 0;
 }
@@ -501,9 +552,11 @@ Plymouth.SetHideMessageFunction(hide_message_callback);
 
 # ---------------------------------------------------------------- refresh ---
 
+capslock_poll = max(1, Math.Int(refresh_rate / 10));   # ticks between caps lock checks, ~10 Hz
+
 fun refresh_callback() {
         if (dialog.shown) {
-                if (bar.tick % 10 == 0) dialog_update_capslock();
+                if (bar.tick % capslock_poll == 0) dialog_update_capslock();
                 bar.tick++;
                 return;
         }
@@ -528,8 +581,8 @@ Plymouth.SetRefreshFunction(refresh_callback);
 # What does arrive in time is systemd's status update for a unit that starts
 # just before the display manager: the bar is filled right there, in one
 # frame.  Measured on a GDM system, the deactivate follows the display
-# manager's start by some 50 ms; with refresh_rate ticks of 10 ms the frame
-# is on screen well within that.  The quit function is kept for the case
+# manager's start by some 50 ms; with refresh_rate ticks of about 17 ms the
+# frame is on screen well within that.  The quit function is kept for the case
 # where plymouth still draws at quit.
 
 fun booting() { return mode == "boot" || mode == "unknown"; }
